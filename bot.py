@@ -11,8 +11,8 @@
 4. Игрок жмёт кнопку -> бот получает contact (телефон, имя, id).
 5. Backend привязывает telegram_id к game_user_id, сохраняет только то,
    что реально прислал Telegram, и оповещает игру через WebSocket.
-6. Дальше все текстовые сообщения от этого telegram_id уходят в игру,
-   а игра может отправлять сообщения этому пользователю через бота.
+6. Дальше все текстовые сообщения от этого telegram_id уходят в игру
+   И в общую публичную ленту, которую видят все игроки.
 """
 
 import asyncio
@@ -59,8 +59,7 @@ async def start_with_token(message: Message, command: CommandObject):
     storage.mark_pending_telegram_id(link_token, message.from_user.id)
     await message.answer(
         "Пожалуйста, авторизуйтесь: нажмите кнопку ниже, чтобы поделиться "
-        "данными профиля с игрой. Мы передадим в игру только то, что "
-        "разрешит Telegram.",
+        "данными профиля с игрой.",
         reply_markup=CONTACT_KEYBOARD,
     )
 
@@ -122,12 +121,22 @@ async def text_message(message: Message):
 
     user = storage.get_user(game_user_id)
     if user and user.get("blocked"):
-        # Пользователь заблокирован в игре — молча игнорируем сообщение,
-        # так как Bot API не позволяет боту "заблокировать" юзера в личке.
         return
 
     msg = storage.add_message(game_user_id, "in", message.text)
     await ws_manager.send(game_user_id, {"type": "message", "message": msg})
+    await ws_manager.broadcast_feed(
+        {
+            "type": "feed_message",
+            "message": {
+                "game_user_id": game_user_id,
+                "display_name": storage.display_name(game_user_id),
+                "direction": "in",
+                "text": message.text,
+                "ts": msg["ts"],
+            },
+        }
+    )
 
 
 async def send_to_telegram(bot: Bot, game_user_id: str, text: str) -> bool:
@@ -137,7 +146,19 @@ async def send_to_telegram(bot: Bot, game_user_id: str, text: str) -> bool:
     if user.get("blocked"):
         return False
     await bot.send_message(user["telegram_id"], text)
-    storage.add_message(game_user_id, "out", text)
+    msg = storage.add_message(game_user_id, "out", text)
+    await ws_manager.broadcast_feed(
+        {
+            "type": "feed_message",
+            "message": {
+                "game_user_id": game_user_id,
+                "display_name": storage.display_name(game_user_id),
+                "direction": "out",
+                "text": text,
+                "ts": msg["ts"],
+            },
+        }
+    )
     return True
 
 
